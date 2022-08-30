@@ -1,0 +1,74 @@
+#!/usr/bin/env groovy
+@Library('toast') _
+
+def commandOutput = ""
+
+def config = [
+    nodeVersion:'12.11.0'
+  ]
+
+pipeline {
+    agent {
+        node { label 'tw-agent' }
+    }
+
+    parameters {
+        string(name: 'slackChannel', defaultValue: "#ecomm-alert-testing" , description: 'Slack #channel')
+        string(defaultValue: "https://hooks.slack.com/services/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", description: 'Slack web hook url', name: 'slackWebHookUrl')
+    }
+
+    stages {
+
+        // Test
+        stage('volta setup') {
+            steps {
+                script {
+                    env.PATH = "$PATH:/var/lib/jenkins/.nvm/versions/node/v${config.nodeVersion}/bin"
+                    env.PATH = "$PATH:/home/ubuntu/.nvm/versions/node/v12.11.0/bin/" // References newman installations
+                    sh """
+                    node --version
+                    yarn --version
+                    GIT_URL=${GIT_URL}
+                    GIT_BRANCH=${GIT_BRANCH}
+                    GIT_COMMIT=${GIT_COMMIT}
+                    JOB_NAME=${JOB_NAME}
+                    """
+                }
+            }
+        }
+        
+        stage ('Run Collection') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'magento_automation_user', passwordVariable: 'magento_automation_password', usernameVariable: 'magento_automation_username'), string(credentialsId: 'slack_reporter_webhook_url', variable: 'slack_url')]){
+                    script {
+                        try {
+                            def fullMvnCommand = "newman run Collections/Magento/EcommMagento.postman_collection.json --global-var \"magento_url=mcstaging.shop.toasttab.com\" --global-var \"magento_user=${magento_automation_username}\" --global-var \"magento_pass=${magento_automation_password}\" -r cli,slack --reporter-slack-channel \"${params.slackChannel}\" --reporter-slack-webhook-url \"${params.slackWebHookUrl}\""
+                            commandOutput = sh(
+                                    script: fullMvnCommand,
+                                    returnStdout: true
+                            ).trim()
+                            
+                        } catch (error) {
+                            // Just in case the mvn command in the try block fails, we need to re-enable console logging
+                            echo "------------ TEST RUN FAILED ------------"
+                        }
+                    }
+                }
+            }
+        }
+    }
+    post {
+        success {
+            echo "Test succeeded"
+            slackSend botUser: false, channel: "#ecomm-alert-testing", color: "#00FF00", failOnError: false,
+        teamDomain: 'toasttab', tokenCredentialId: 'business_systems_qa_slack',
+        message: "Build:\n${BUILD_URL}\n"
+        }
+        failure {
+            echo "Test failed"
+            slackSend botUser: false, channel: "#ecomm-alert-testing", color: "#FF0000", failOnError: false,
+        teamDomain: 'toasttab', tokenCredentialId: 'business_systems_qa_slack',
+        message: "Build:\n${BUILD_URL}\n"
+        }
+    }
+}
